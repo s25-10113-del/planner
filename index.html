@@ -1,0 +1,353 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  ChevronLeft, 
+  ChevronRight, 
+  Plus, 
+  Play, 
+  Pause, 
+  RotateCcw, 
+  Trash2, 
+  X,
+  Calendar,
+  Archive as ArchiveIcon,
+  BookOpen,
+  CheckCircle2,
+  Circle,
+  Flag,
+  Save,
+  Settings as SettingsIcon
+} from 'lucide-react';
+
+// Firebase 라이브러리 임포트
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  doc, 
+  setDoc, 
+  onSnapshot, 
+  collection
+} from 'firebase/firestore';
+
+// 사용자가 제공한 Firebase 설정
+const firebaseConfig = {
+  apiKey: "AIzaSyDkiGchFis1Lq4fQ-1k3fKElP-AgVtx08c",
+  authDomain: "story2-60345.firebaseapp.com",
+  projectId: "story2-60345",
+  storageBucket: "story2-60345.firebasestorage.app",
+  messagingSenderId: "64911818684",
+  appId: "1:64911818684:web:773d12b7f7e401418435b9",
+  measurementId: "G-FME3W1TV6C"
+};
+
+// Firebase 초기화
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = 'study-planner-app';
+
+const App = () => {
+  // --- 상태 관리 ---
+  const [view, setView] = useState('planner'); 
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [planners, setPlanners] = useState({}); 
+  const [timetable, setTimetable] = useState(Array(40).fill('')); 
+  const [dDay, setDDay] = useState({ date: '', label: '목표' }); 
+  const [isDDayModalOpen, setIsDDayModalOpen] = useState(false); 
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false); 
+  const [tempDDay, setTempDDay] = useState({ date: '', label: '' }); 
+  const [selectedArchive, setSelectedArchive] = useState(null); 
+  
+  // Firebase 사용자 상태
+  const [user, setUser] = useState(null);
+
+  // 설정 관련 상태 (글꼴, 테마)
+  const [fontStyle, setFontStyle] = useState('font-sans'); 
+  const [themeColor, setThemeColor] = useState('blue'); 
+
+  const [isActive, setIsActive] = useState(false);
+  const [seconds, setSeconds] = useState(0);
+  const timerRef = useRef(null);
+
+  // 테마별 색상 맵
+  const themes = {
+    blue: { primary: 'bg-blue-600', text: 'text-blue-500', ring: 'focus:ring-blue-100', border: 'border-blue-500', light: 'bg-blue-50', hover: 'hover:bg-blue-700', icon: 'text-blue-400', buttonAlpha: 'bg-blue-600/80' },
+    green: { primary: 'bg-emerald-600', text: 'text-emerald-500', ring: 'focus:ring-emerald-100', border: 'border-emerald-500', light: 'bg-emerald-50', hover: 'hover:bg-emerald-700', icon: 'text-emerald-400', buttonAlpha: 'bg-emerald-600/80' },
+    pink: { primary: 'bg-rose-500', text: 'text-rose-500', ring: 'focus:ring-rose-100', border: 'border-rose-500', light: 'bg-rose-50', hover: 'hover:bg-rose-600', icon: 'text-rose-400', buttonAlpha: 'bg-rose-500/80' },
+    mono: { primary: 'bg-slate-800', text: 'text-slate-800', ring: 'focus:ring-slate-200', border: 'border-slate-800', light: 'bg-slate-100', hover: 'hover:bg-slate-900', icon: 'text-slate-400', buttonAlpha: 'bg-slate-700' }
+  };
+
+  const currentTheme = themes[themeColor] || themes.blue;
+
+  // --- FIREBASE 인증 개선 ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token && __initial_auth_token.trim() !== "") {
+          try {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } catch (tokenError) {
+            console.warn("Custom token failed, falling back to anonymous auth:", tokenError.message);
+            await signInAnonymously(auth);
+          }
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Critical Auth Error:", error);
+      }
+    };
+
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- 실시간 데이터 연동 ---
+  useEffect(() => {
+    if (!user) return;
+
+    const plannersRef = collection(db, 'artifacts', appId, 'users', user.uid, 'planners');
+    const unsubPlanners = onSnapshot(plannersRef, (snapshot) => {
+      const data = {};
+      snapshot.forEach(doc => {
+        data[doc.id] = doc.data();
+      });
+      setPlanners(data);
+    }, (err) => console.error("Planners Sync Error:", err));
+
+    const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'config');
+    const unsubSettings = onSnapshot(settingsRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        if (data.timetable) setTimetable(data.timetable);
+        if (data.dDay) setDDay(data.dDay);
+        if (data.fontStyle) setFontStyle(data.fontStyle);
+        if (data.themeColor) setThemeColor(data.themeColor);
+      }
+    }, (err) => console.error("Settings Sync Error:", err));
+
+    return () => {
+      unsubPlanners();
+      unsubSettings();
+    };
+  }, [user]);
+
+  const formatDate = (date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const week = ['일', '월', '화', '수', '목', '금', '토'][date.getDay()];
+    return `${year}-${month}-${day}-(${week})`;
+  };
+
+  const dateKey = formatDate(currentDate);
+  const currentData = planners[dateKey] || { goal: '', tasks: [], timer: 0 };
+
+  const calculateDDay = () => {
+    if (!dDay.date) return 'D-?';
+    const target = new Date(dDay.date);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    target.setHours(0, 0, 0, 0);
+    const diffTime = target.getTime() - today.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    if (diffDays === 0) return 'D-Day';
+    return diffDays > 0 ? `D-${diffDays}` : `D+${Math.abs(diffDays)}`;
+  };
+
+  const syncPlannerToCloud = async (newData) => {
+    if (!user) return;
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'planners', dateKey), newData);
+    } catch (e) {
+      console.error("Cloud Sync Error:", e);
+    }
+  };
+
+  const syncSettingsToCloud = async (updates) => {
+    if (!user) return;
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'config'), updates, { merge: true });
+    } catch (e) {
+      console.error("Settings Sync Error:", e);
+    }
+  };
+
+  const updateCurrentPlanner = (newData) => {
+    const updatedData = { ...currentData, ...newData };
+    syncPlannerToCloud(updatedData);
+  };
+
+  useEffect(() => {
+    if (isActive) {
+      timerRef.current = setInterval(() => {
+        setSeconds(prev => prev + 1);
+      }, 1000);
+    } else {
+      clearInterval(timerRef.current);
+    }
+    return () => clearInterval(timerRef.current);
+  }, [isActive]);
+
+  useEffect(() => {
+    setSeconds(currentData.timer || 0);
+  }, [dateKey, currentData.timer]);
+
+  const formatTime = (totalSeconds) => {
+    const h = String(Math.floor(totalSeconds / 3600)).padStart(2, '0');
+    const m = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0');
+    const s = String(totalSeconds % 60).padStart(2, '0');
+    return `${h}:${m}:${s}`;
+  };
+
+  return (
+    <div className={`h-screen w-full bg-[#E2E8F0] text-[#1E293B] ${fontStyle} p-2 md:p-4 overflow-hidden flex items-center justify-center transition-all`}>
+      <div className="h-full w-full max-w-[1400px] bg-white rounded-[2.5rem] shadow-2xl flex overflow-hidden border border-white/50 relative">
+        <div className={`hidden xl:block w-10 bg-[#1E293B] shrink-0`}></div>
+        <div className="flex-1 flex flex-col min-w-0">
+          <header className="h-16 shrink-0 flex justify-between items-center px-8 border-b border-gray-100 bg-white z-10">
+            <div className="flex items-center space-x-6">
+              <div className="flex items-center space-x-3">
+                <button onClick={() => { const d = new Date(currentDate); d.setDate(d.getDate()-1); setCurrentDate(d); setIsActive(false); }} className="p-1.5 hover:bg-gray-100 rounded-full text-gray-400 hover:text-gray-900"><ChevronLeft size={20} /></button>
+                <div className="flex items-center space-x-3">
+                  <Calendar className={currentTheme.text} size={20} />
+                  <span className="text-xl font-black tracking-tighter text-[#334155]">{dateKey}</span>
+                </div>
+                <button onClick={() => { const d = new Date(currentDate); d.setDate(d.getDate()+1); setCurrentDate(d); setIsActive(false); }} className="p-1.5 hover:bg-gray-100 rounded-full text-gray-400 hover:text-gray-900"><ChevronRight size={20} /></button>
+              </div>
+              <button onClick={() => setIsDDayModalOpen(true)} className="flex items-center space-x-2 bg-[#1E293B] px-4 py-1.5 rounded-full shadow-md group">
+                <Flag size={14} className={currentTheme.icon} fill="currentColor" />
+                <span className="text-white font-black text-sm">{calculateDDay()}</span>
+              </button>
+            </div>
+            <div className="flex items-center space-x-4">
+              <div className="flex bg-gray-100 p-1 rounded-xl">
+                <button onClick={() => setView('planner')} className={`px-6 py-1.5 rounded-lg text-xs font-black ${view === 'planner' ? 'bg-[#334155] text-white' : 'text-gray-400'}`}>PLANNER</button>
+                <button onClick={() => setView('archive')} className={`px-6 py-1.5 rounded-lg text-xs font-black ${view === 'archive' ? 'bg-[#334155] text-white' : 'text-gray-400'}`}>ARCHIVE</button>
+              </div>
+              <button onClick={() => setIsSettingsOpen(true)} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full"><SettingsIcon size={22} /></button>
+            </div>
+          </header>
+
+          <div className="flex-1 overflow-hidden">
+            {view === 'planner' ? (
+              <div className="h-full flex p-6 gap-6 overflow-hidden">
+                <div className="flex-1 flex flex-col space-y-3 min-w-0 h-full">
+                  <div className="relative shrink-0">
+                    <div className={`absolute left-4 top-1/2 -translate-y-1/2 w-1 h-6 ${currentTheme.primary} rounded-full`}></div>
+                    <input type="text" placeholder="오늘의 다짐을 입력하세요..." value={currentData.goal} onChange={(e) => updateCurrentPlanner({ goal: e.target.value })} className="w-full pl-8 pr-4 py-3.5 bg-gray-50 border-none rounded-2xl text-lg font-bold focus:bg-white focus:ring-2 focus:outline-none transition-all" />
+                  </div>
+                  <div className="flex-1 flex flex-col min-h-0 bg-white border border-gray-100 rounded-[2rem] p-5 shadow-sm overflow-hidden">
+                    <div className="flex justify-between items-center mb-4 shrink-0">
+                      <div className="flex items-center space-x-2 bg-[#334155] text-white px-4 py-1.5 rounded-xl text-[10px] font-black tracking-wider">
+                        <BookOpen size={14} /><span>TASKS</span>
+                      </div>
+                      <button onClick={() => updateCurrentPlanner({ tasks: [...currentData.tasks, { id: Date.now(), text: '', done: false }] })} className="w-9 h-9 bg-[#1E293B] text-white rounded-xl flex items-center justify-center hover:scale-105 transition-all"><Plus size={20} /></button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto space-y-3 pr-2">
+                      {currentData.tasks.map(task => (
+                        <div key={task.id} className="flex items-center group bg-gray-50/50 p-4 rounded-xl hover:bg-white border border-transparent transition-all">
+                          <button onClick={() => updateCurrentPlanner({ tasks: currentData.tasks.map(t => t.id === task.id ? { ...t, done: !t.done } : t) })}>{task.done ? <CheckCircle2 className={currentTheme.text} size={22} /> : <Circle className="text-gray-300" size={22} />}</button>
+                          <input type="text" value={task.text} onChange={(e) => updateCurrentPlanner({ tasks: currentData.tasks.map(t => t.id === task.id ? { ...t, text: e.target.value } : t) })} className={`ml-3 flex-1 bg-transparent border-none focus:outline-none text-base font-bold ${task.done ? 'line-through text-gray-400' : 'text-gray-700'}`} />
+                          <button onClick={() => updateCurrentPlanner({ tasks: currentData.tasks.filter(t => t.id !== task.id) })} className="opacity-0 group-hover:opacity-100 p-1.5 text-red-200 hover:text-red-500"><Trash2 size={16} /></button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                <div className="w-[320px] flex flex-col gap-6 shrink-0 h-full">
+                  <div className="bg-white border border-gray-100 rounded-2xl overflow-hidden shadow-sm flex flex-col flex-1 min-h-0">
+                    <div className="bg-[#1E293B] text-white py-2.5 text-center text-[10px] font-black tracking-widest uppercase">Weekly Timetable</div>
+                    <div className="grid grid-cols-5 text-[11px] font-black text-center bg-gray-100 border-b border-gray-300">{['월', '화', '수', '목', '금'].map(day => (<div key={day} className="py-2 border-r border-gray-300 last:border-0">{day}</div>))}</div>
+                    <div className="flex-1 grid grid-cols-5 text-[12px] text-center overflow-hidden">
+                      {timetable.map((subject, i) => (
+                        <div key={i} className="border-b border-r border-gray-300 last:border-r-0 hover:bg-gray-50 transition-colors">
+                          <input type="text" value={subject} onChange={e => { const nt = [...timetable]; nt[i] = e.target.value; setTimetable(nt); syncSettingsToCloud({ timetable: nt }); }} className="w-full h-full bg-transparent border-none focus:outline-none text-center font-bold p-1 placeholder-gray-300" placeholder="-" />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="shrink-0 bg-[#1E293B] rounded-[2rem] p-4 shadow-xl flex items-center justify-between relative overflow-hidden group">
+                    <div className="relative z-10 flex items-center space-x-4 w-full">
+                      <button onClick={() => { if(isActive) updateCurrentPlanner({ timer: seconds }); setIsActive(!isActive); }} className={`w-10 h-10 ${currentTheme.primary} text-white rounded-2xl flex items-center justify-center transition-all shadow-md`}>{isActive ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}</button>
+                      <div className="flex-1 font-mono text-3xl text-white tracking-tighter">{formatTime(seconds)}</div>
+                      <button onClick={() => { setIsActive(false); setSeconds(0); updateCurrentPlanner({ timer: 0 }); }} className="w-8 h-8 bg-white/10 text-white rounded-xl flex items-center justify-center"><RotateCcw size={14} /></button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="h-full overflow-y-auto p-8">
+                <div className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {Object.entries(planners).sort((a,b) => b[0].localeCompare(a[0])).map(([key, data]) => (
+                    <div key={key} onClick={() => setSelectedArchive({ key, ...data })} className="bg-white border border-gray-100 p-6 rounded-[2rem] shadow-sm hover:shadow-xl transition-all cursor-pointer">
+                      <div className="flex justify-between items-center mb-4"><span className={`${currentTheme.text} font-black text-xs`}>{key}</span><span className={`${currentTheme.light} ${currentTheme.text} px-2 py-0.5 rounded text-[10px] font-black`}>{formatTime(data.timer || 0)}</span></div>
+                      <h3 className="font-bold text-lg text-gray-800 line-clamp-1 mb-2">{data.goal || '기록 없음'}</h3>
+                    </div>
+                  ))}
+                  {Object.keys(planners).length === 0 && (
+                    <div className="col-span-full py-20 text-center text-gray-400 font-bold">아직 저장된 기록이 없습니다.</div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {isSettingsOpen && (
+        <div className="fixed inset-0 bg-[#1E293B]/60 backdrop-blur-sm z-[150] flex items-center justify-center p-6">
+          <div className="bg-white w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl">
+            <div className="flex justify-between items-center mb-8"><h3 className="text-xl font-black">환경 설정</h3><button onClick={() => setIsSettingsOpen(false)}><X/></button></div>
+            <div className="space-y-8">
+              <section><label className="block text-[11px] font-black text-gray-400 mb-4 uppercase">테마 색상</label>
+                <div className="grid grid-cols-4 gap-4">{['blue', 'green', 'pink', 'mono'].map(t => (
+                  <button key={t} onClick={() => { setThemeColor(t); syncSettingsToCloud({ themeColor: t }); }} className={`w-12 h-12 rounded-2xl ${themes[t].primary} ${themeColor === t ? 'ring-4 ring-slate-200' : ''}`} />
+                ))}</div>
+              </section>
+              <button onClick={() => setIsSettingsOpen(false)} className={`w-full py-4 ${currentTheme.primary} text-white rounded-2xl font-black shadow-xl`}>설정 완료</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isDDayModalOpen && (
+        <div className="fixed inset-0 bg-[#1E293B]/60 backdrop-blur-sm z-100 flex items-center justify-center p-6">
+          <div className="bg-white w-full max-w-sm rounded-[2rem] p-6 shadow-2xl">
+            <h3 className="text-lg font-black text-center mb-6">D-Day 설정</h3>
+            <div className="space-y-4">
+              <input type="text" placeholder="목표 이름" value={tempDDay.label} onChange={e => setTempDDay({...tempDDay, label: e.target.value})} className="w-full px-4 py-3 bg-gray-50 rounded-xl outline-none font-bold" />
+              <input type="date" value={tempDDay.date} onChange={e => setTempDDay({...tempDDay, date: e.target.value})} className="w-full px-4 py-3 bg-gray-50 rounded-xl outline-none font-bold" />
+              <button onClick={async () => { await syncSettingsToCloud({ dDay: tempDDay }); setDDay(tempDDay); setIsDDayModalOpen(false); }} className={`w-full py-4 ${currentTheme.primary} text-white rounded-xl font-black shadow-lg`}>저장하기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedArchive && (
+        <div className="fixed inset-0 bg-[#1E293B]/60 backdrop-blur-sm z-50 flex items-center justify-center p-6">
+          <div className="bg-white w-full max-w-xl rounded-[2.5rem] overflow-hidden shadow-2xl">
+            <div className="bg-[#1E293B] p-8 text-white flex justify-between items-center">
+              <div><h3 className="text-3xl font-black">{selectedArchive.key}</h3><p className="opacity-70 font-bold mt-1">Focus: {formatTime(selectedArchive.timer || 0)}</p></div>
+              <button onClick={() => setSelectedArchive(null)} className="w-10 h-10 bg-white/10 rounded-full flex items-center justify-center"><X/></button>
+            </div>
+            <div className="p-8 space-y-6">
+              <div className="p-5 bg-gray-50 rounded-2xl border-l-4 border-slate-800"><p className="text-xl font-bold">{selectedArchive.goal || '작성된 다짐 없음'}</p></div>
+              <div className="space-y-2">{selectedArchive.tasks?.map(task => (<div key={task.id} className="flex items-center space-x-3 p-3 bg-gray-50/50 rounded-xl"><div className={`w-2 h-2 rounded-full ${task.done ? currentTheme.primary : 'bg-gray-200'}`}></div><span className="font-bold">{task.text}</span></div>))}</div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default App;
